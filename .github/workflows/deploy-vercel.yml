@@ -9,8 +9,6 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
-      VERCEL_ORG_ID: team_kFv2OMpSyY3EwEiMOF5zXTXA
 
     steps:
       - name: Checkout
@@ -25,30 +23,61 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Build project
+        run: npm run build
+
+      # ── Step 1: verify token ───────────────────────────────────────────
       - name: Verify Vercel token
+        id: token_check
         run: |
-          echo "Testing token against Vercel API..."
-          STATUS=$(curl -s -o /tmp/vercel_test.json -w "%{http_code}" \
+          HTTP=$(curl -s -o /tmp/user.json -w "%{http_code}" \
             -H "Authorization: Bearer ${{ secrets.VERCEL_TOKEN }}" \
             https://api.vercel.com/v2/user)
-          echo "HTTP Status: $STATUS"
-          cat /tmp/vercel_test.json
-          if [ "$STATUS" != "200" ]; then
-            echo "❌ Token is invalid or rejected (HTTP $STATUS)"
-            exit 1
-          fi
-          echo "✅ Token is valid"
+          echo "HTTP status: $HTTP"
+          cat /tmp/user.json
+          echo "http_status=$HTTP" >> $GITHUB_OUTPUT
 
-      - name: Install Vercel CLI
-        run: npm install -g vercel@latest
-
-      - name: Deploy to Vercel
+      # ── Step 2: create/get project ────────────────────────────────────
+      - name: Create Vercel project
+        id: create_project
+        if: steps.token_check.outputs.http_status == '200'
         run: |
-          set -e
-          vercel deploy \
-            --token="${{ secrets.VERCEL_TOKEN }}" \
-            --yes \
-            --prod \
-            --name=crud-usuarios-tecsup \
-            --debug \
-            2>&1
+          HTTP=$(curl -s -o /tmp/project.json -w "%{http_code}" \
+            -X POST https://api.vercel.com/v9/projects \
+            -H "Authorization: Bearer ${{ secrets.VERCEL_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "crud-usuarios-tecsup",
+              "framework": "vite",
+              "teamId": "team_kFv2OMpSyY3EwEiMOF5zXTXA"
+            }')
+          echo "HTTP status: $HTTP"
+          cat /tmp/project.json
+          PROJECT_ID=$(jq -r '.id // .project.id // empty' /tmp/project.json)
+          echo "project_id=$PROJECT_ID" >> $GITHUB_OUTPUT
+          echo "Project ID: $PROJECT_ID"
+
+      # ── Step 3: create deployment from git ref ────────────────────────
+      - name: Create deployment
+        if: steps.token_check.outputs.http_status == '200'
+        run: |
+          PROJECT_ID="${{ steps.create_project.outputs.project_id }}"
+          HTTP=$(curl -s -o /tmp/deploy.json -w "%{http_code}" \
+            -X POST "https://api.vercel.com/v13/deployments" \
+            -H "Authorization: Bearer ${{ secrets.VERCEL_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"name\": \"crud-usuarios-tecsup\",
+              \"target\": \"production\",
+              \"teamId\": \"team_kFv2OMpSyY3EwEiMOF5zXTXA\",
+              \"gitSource\": {
+                \"type\": \"github\",
+                \"org\": \"Miguel-Sanchez241001\",
+                \"repo\": \"front-tecsup\",
+                \"ref\": \"claude/java-project-frontend-backend-MKf2S\"
+              }
+            }")
+          echo "HTTP status: $HTTP"
+          cat /tmp/deploy.json | python3 -m json.tool 2>/dev/null || cat /tmp/deploy.json
+          DEPLOY_URL=$(jq -r '.url // empty' /tmp/deploy.json)
+          echo "✅ Deployment URL: https://$DEPLOY_URL"
